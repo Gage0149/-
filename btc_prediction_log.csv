@@ -1,0 +1,3 @@
+time,start_price,predicted,actual,correct,regime,conf,timestamp
+2025-12-02 09:16:13.483511,86579.87,-1.0,-1.0,,low_conf,0.0,
+,,,,0.0,,,2025-12-02 11:35:24.945585

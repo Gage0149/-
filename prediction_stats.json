@@ -1,0 +1,23 @@
+{
+  "total_predictions": 1,
+  "correct_predictions": 0,
+  "current_streak": -1,
+  "best_win_streak": 0,
+  "worst_loss_streak": -1,
+  "total_profit_pct": -0.16064703640507377,
+  "hourly_stats": {
+    "hour_08": {
+      "total": 1,
+      "correct": 0,
+      "profit": -0.16064703640507377
+    }
+  },
+  "daily_stats": {
+    "2025-12-02": {
+      "total": 1,
+      "correct": 0,
+      "profit": -0.16064703640507377
+    }
+  },
+  "last_update": "2025-12-02 09:13:13"
+}

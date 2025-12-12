@@ -1,0 +1,15 @@
+[
+  {
+    "start_price": 86325.9,
+    "end_price": 86464.58,
+    "change_pct": 0.16064703640507377,
+    "prediction": 0,
+    "actual": 1,
+    "is_correct": false,
+    "confidence": 0.8313232736590579,
+    "market_state": "ranging",
+    "model_used": "rf",
+    "id": "pred_20251202_085554_0",
+    "timestamp": "2025-12-02 08:55:54"
+  }
+]

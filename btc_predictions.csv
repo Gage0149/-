@@ -1,0 +1,1929 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+BTC预测系统 - 成交量增强版
+双击start.bat或直接运行此文件
+"""
+
+import os
+import sys
+import traceback
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext, filedialog
+import threading
+import time
+import queue
+import math
+import json
+import csv
+from datetime import datetime, timedelta
+
+print("=" * 70)
+print("BTC 10分钟预测系统 - 成交量增强版 v2.1")
+print("=" * 70)
+
+# ==================== 检查依赖 ====================
+print("\n检查依赖库...")
+
+try:
+    import requests
+    import pandas as pd
+    import numpy as np
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import StandardScaler
+    import colorama
+    colorama.init()
+    print("✓ 核心依赖加载成功")
+except ImportError as e:
+    print(f"❌ 缺少依赖: {e}")
+    print("\n请运行: pip install requests pandas numpy scikit-learn colorama")
+    if sys.platform == "win32":
+        input("按Enter键退出...")
+    sys.exit(1)
+
+# 可选依赖
+optional_deps = {}
+try:
+    from lightgbm import LGBMClassifier
+    optional_deps['lightgbm'] = True
+    print("✓ LightGBM 可用")
+except:
+    optional_deps['lightgbm'] = False
+    print("⚠ LightGBM 不可用")
+
+try:
+    from xgboost import XGBClassifier
+    optional_deps['xgboost'] = True
+    print("✓ XGBoost 可用")
+except:
+    optional_deps['xgboost'] = False
+    print("⚠ XGBoost 不可用")
+
+try:
+    import tensorflow as tf
+    optional_deps['tensorflow'] = True
+    print("✓ TensorFlow 可用")
+except:
+    optional_deps['tensorflow'] = False
+    print("⚠ TensorFlow 不可用")
+
+# ==================== 配置参数 ====================
+CONFIG = {
+    'symbol': 'BTCUSDT',
+    'interval': '1m',
+    'data_limit': 1500,
+    'prediction_minutes': 10,
+    'refresh_interval': 30,
+    
+    # 模型配置
+    'confidence_threshold': 0.62,
+    'min_confidence': 0.55,
+    'max_confidence': 0.75,
+    
+    # 市场状态检测
+    'enable_state_detection': True,
+    'trend_threshold': 0.002,
+    'volatility_threshold': 0.0015,
+    
+    # 时间配置（解决上午连败问题）
+    'problematic_hours': [8, 9, 10, 11, 12, 13],  # 上午到下午1点
+    'high_risk_hours': [20, 21, 22, 23, 0, 1, 2, 3],  # 欧美重叠时段
+    
+    # 关键波动时段（根据你的观察添加）
+    'critical_hours': [9, 15, 21],  # 上午9点、下午3点、晚上9点
+    
+    # 风控
+    'consecutive_fail_limit': 6,
+    'recent_winrate_limit': 0.4,
+    'recent_window': 20,
+    
+    # 文件路径
+    'log_csv': 'btc_predictions.csv',
+    'model_rf': 'model_rf.pkl',
+    'model_lgb': 'model_lgb.pkl',
+    'model_xgb': 'model_xgb.pkl',
+    'model_morning': 'model_morning.pkl',
+    'history_json': 'prediction_history.json',
+    'stats_json': 'prediction_stats.json'
+}
+
+# ==================== 数据持久化类 ====================
+class PredictionHistory:
+    """预测历史管理器"""
+    
+    def __init__(self):
+        self.history_file = CONFIG['history_json']
+        self.stats_file = CONFIG['stats_json']
+        self.history = []
+        self.stats = {
+            'total_predictions': 0,
+            'correct_predictions': 0,
+            'current_streak': 0,
+            'best_win_streak': 0,
+            'worst_loss_streak': 0,
+            'total_profit_pct': 0.0,
+            'last_update': None
+        }
+        self.load_history()
+        self.load_stats()
+    
+    def load_history(self):
+        """加载历史数据"""
+        try:
+            if os.path.exists(self.history_file):
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    self.history = json.load(f)
+                print(f"✓ 加载历史记录: {len(self.history)} 条")
+            else:
+                self.history = []
+                print("✓ 无历史记录，创建新文件")
+        except Exception as e:
+            print(f"加载历史记录失败: {e}")
+            self.history = []
+    
+    def load_stats(self):
+        """加载统计数据"""
+        try:
+            if os.path.exists(self.stats_file):
+                with open(self.stats_file, 'r', encoding='utf-8') as f:
+                    self.stats = json.load(f)
+                print(f"✓ 加载统计数据")
+            else:
+                self.init_stats()
+                print("✓ 无统计数据，创建新文件")
+        except Exception as e:
+            print(f"加载统计数据失败: {e}")
+            self.init_stats()
+    
+    def init_stats(self):
+        """初始化统计数据"""
+        self.stats = {
+            'total_predictions': 0,
+            'correct_predictions': 0,
+            'current_streak': 0,
+            'best_win_streak': 0,
+            'worst_loss_streak': 0,
+            'total_profit_pct': 0.0,
+            'hourly_stats': {},
+            'daily_stats': {},
+            'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+    
+    def save_history(self):
+        """保存历史数据"""
+        try:
+            with open(self.history_file, 'w', encoding='utf-8') as f:
+                json.dump(self.history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存历史记录失败: {e}")
+    
+    def save_stats(self):
+        """保存统计数据"""
+        try:
+            self.stats['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            with open(self.stats_file, 'w', encoding='utf-8') as f:
+                json.dump(self.stats, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存统计数据失败: {e}")
+    
+    def add_prediction(self, prediction_data):
+        """添加新的预测记录"""
+        try:
+            # 生成记录ID
+            record_id = f"pred_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(self.history)}"
+            prediction_data['id'] = record_id
+            prediction_data['timestamp'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # 添加到历史
+            self.history.append(prediction_data)
+            
+            # 更新统计数据
+            self.update_stats(prediction_data)
+            
+            # 保存到文件
+            self.save_history()
+            self.save_stats()
+            
+            # 同时保存到CSV备份
+            self.save_to_csv(prediction_data)
+            
+            print(f"✓ 保存预测记录: {record_id}")
+            return True
+            
+        except Exception as e:
+            print(f"添加预测记录失败: {e}")
+            return False
+    
+    def update_stats(self, prediction_data):
+        """更新统计数据"""
+        try:
+            # 更新总数
+            self.stats['total_predictions'] += 1
+            
+            # 更新正确数
+            if prediction_data.get('is_correct', False):
+                self.stats['correct_predictions'] += 1
+            
+            # 更新连胜/连败
+            is_correct = prediction_data.get('is_correct', False)
+            if is_correct:
+                if self.stats['current_streak'] >= 0:
+                    self.stats['current_streak'] += 1
+                else:
+                    self.stats['current_streak'] = 1
+            else:
+                if self.stats['current_streak'] <= 0:
+                    self.stats['current_streak'] -= 1
+                else:
+                    self.stats['current_streak'] = -1
+            
+            # 更新最佳连胜
+            if self.stats['current_streak'] > self.stats['best_win_streak']:
+                self.stats['best_win_streak'] = self.stats['current_streak']
+            
+            # 更新最差连败
+            if abs(self.stats['current_streak']) > abs(self.stats['worst_loss_streak']):
+                self.stats['worst_loss_streak'] = self.stats['current_streak']
+            
+            # 更新总收益率
+            change_pct = prediction_data.get('change_pct', 0.0)
+            if prediction_data.get('prediction') == 1:  # 预测上涨
+                if change_pct > 0:  # 实际上涨
+                    self.stats['total_profit_pct'] += abs(change_pct)
+                else:  # 实际下跌
+                    self.stats['total_profit_pct'] -= abs(change_pct)
+            else:  # 预测下跌
+                if change_pct < 0:  # 实际下跌
+                    self.stats['total_profit_pct'] += abs(change_pct)
+                else:  # 实际上涨
+                    self.stats['total_profit_pct'] -= abs(change_pct)
+            
+            # 更新小时统计
+            hour = datetime.now().hour
+            hour_key = f"hour_{hour:02d}"
+            if hour_key not in self.stats['hourly_stats']:
+                self.stats['hourly_stats'][hour_key] = {
+                    'total': 0,
+                    'correct': 0,
+                    'profit': 0.0
+                }
+            
+            self.stats['hourly_stats'][hour_key]['total'] += 1
+            if prediction_data.get('is_correct', False):
+                self.stats['hourly_stats'][hour_key]['correct'] += 1
+                self.stats['hourly_stats'][hour_key]['profit'] += abs(change_pct)
+            else:
+                self.stats['hourly_stats'][hour_key]['profit'] -= abs(change_pct)
+            
+            # 更新日统计
+            date_key = datetime.now().strftime('%Y-%m-%d')
+            if date_key not in self.stats['daily_stats']:
+                self.stats['daily_stats'][date_key] = {
+                    'total': 0,
+                    'correct': 0,
+                    'profit': 0.0
+                }
+            
+            self.stats['daily_stats'][date_key]['total'] += 1
+            if prediction_data.get('is_correct', False):
+                self.stats['daily_stats'][date_key]['correct'] += 1
+                self.stats['daily_stats'][date_key]['profit'] += abs(change_pct)
+            else:
+                self.stats['daily_stats'][date_key]['profit'] -= abs(change_pct)
+                
+        except Exception as e:
+            print(f"更新统计数据失败: {e}")
+    
+    def save_to_csv(self, prediction_data):
+        """保存到CSV文件备份"""
+        try:
+            csv_file = CONFIG['log_csv']
+            file_exists = os.path.exists(csv_file)
+            
+            with open(csv_file, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    'id', 'timestamp', 'start_price', 'end_price', 'change_pct',
+                    'prediction', 'actual', 'is_correct', 'confidence',
+                    'market_state', 'model_used', 'profit_pct'
+                ])
+                
+                if not file_exists:
+                    writer.writeheader()
+                
+                # 计算收益
+                profit_pct = 0.0
+                change_pct = prediction_data.get('change_pct', 0.0)
+                if prediction_data.get('prediction') == 1:  # 预测上涨
+                    if change_pct > 0:  # 实际上涨
+                        profit_pct = abs(change_pct)
+                    else:  # 实际下跌
+                        profit_pct = -abs(change_pct)
+                else:  # 预测下跌
+                    if change_pct < 0:  # 实际下跌
+                        profit_pct = abs(change_pct)
+                    else:  # 实际上涨
+                        profit_pct = -abs(change_pct)
+                
+                row = {
+                    'id': prediction_data.get('id', ''),
+                    'timestamp': prediction_data.get('timestamp', ''),
+                    'start_price': prediction_data.get('start_price', 0),
+                    'end_price': prediction_data.get('end_price', 0),
+                    'change_pct': change_pct,
+                    'prediction': '上涨' if prediction_data.get('prediction') == 1 else '下跌',
+                    'actual': '上涨' if prediction_data.get('actual') == 1 else '下跌',
+                    'is_correct': '是' if prediction_data.get('is_correct') else '否',
+                    'confidence': prediction_data.get('confidence', 0),
+                    'market_state': prediction_data.get('market_state', ''),
+                    'model_used': prediction_data.get('model_used', ''),
+                    'profit_pct': profit_pct
+                }
+                
+                writer.writerow(row)
+                
+        except Exception as e:
+            print(f"保存CSV失败: {e}")
+    
+    def get_recent_predictions(self, limit=50):
+        """获取最近的预测记录"""
+        return self.history[-limit:] if self.history else []
+    
+    def get_summary_stats(self):
+        """获取汇总统计"""
+        if self.stats['total_predictions'] > 0:
+            winrate = (self.stats['correct_predictions'] / self.stats['total_predictions']) * 100
+        else:
+            winrate = 0.0
+        
+        return {
+            'total': self.stats['total_predictions'],
+            'correct': self.stats['correct_predictions'],
+            'winrate': winrate,
+            'current_streak': self.stats['current_streak'],
+            'best_win_streak': self.stats['best_win_streak'],
+            'worst_loss_streak': self.stats['worst_loss_streak'],
+            'total_profit': self.stats['total_profit_pct'],
+            'avg_profit': self.stats['total_profit_pct'] / max(self.stats['total_predictions'], 1)
+        }
+    
+    def get_hourly_stats(self):
+        """获取小时统计"""
+        return self.stats.get('hourly_stats', {})
+    
+    def get_daily_stats(self):
+        """获取日统计"""
+        return self.stats.get('daily_stats', {})
+    
+    def clear_history(self):
+        """清空历史记录"""
+        self.history = []
+        self.init_stats()
+        self.save_history()
+        self.save_stats()
+        print("✓ 历史记录已清空")
+
+# ==================== 工具函数 ====================
+class DataFetcher:
+    """数据获取器"""
+    
+    @staticmethod
+    def get_price():
+        """获取BTC价格"""
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price"
+            response = requests.get(url, params={"symbol": "BTCUSDT"}, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                return float(data['price'])
+        except Exception as e:
+            print(f"获取价格失败: {e}")
+        return None
+    
+    @staticmethod
+    def get_klines(limit=500):
+        """获取K线数据"""
+        try:
+            url = "https://api.binance.com/api/v3/klines"
+            params = {
+                "symbol": "BTCUSDT",
+                "interval": "1m",
+                "limit": limit
+            }
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                df = pd.DataFrame(data, columns=[
+                    'open_time', 'open', 'high', 'low', 'close', 'volume',
+                    'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+                    'taker_buy_quote', 'ignore'
+                ])
+                df = df[['open_time', 'open', 'high', 'low', 'close', 'volume']].astype(float)
+                df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+                return df
+        except Exception as e:
+            print(f"获取K线失败: {e}")
+        return None
+
+class FeatureEngineer:
+    """特征工程师 - 增强版（添加成交量特征）"""
+    
+    @staticmethod
+    def add_features(df):
+        """添加技术指标特征"""
+        df = df.copy()
+        
+        # 基础特征
+        df['ret1'] = df['close'].pct_change()
+        
+        # 移动平均线
+        for period in [3, 5, 8, 13, 21, 50, 99]:
+            df[f'ma{period}'] = df['close'].rolling(period).mean()
+            df[f'ma{period}_diff'] = (df['close'] - df[f'ma{period}']) / (df[f'ma{period}'] + 1e-9)
+        
+        # RSI
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        rs = avg_gain / (avg_loss + 1e-9)
+        df['rsi'] = 100 - (100 / (1 + rs))
+        
+        # MACD
+        exp1 = df['close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['close'].ewm(span=26, adjust=False).mean()
+        df['macd'] = exp1 - exp2
+        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+        df['macd_hist'] = df['macd'] - df['macd_signal']
+        
+        # 布林带
+        rolling_mean = df['close'].rolling(20).mean()
+        rolling_std = df['close'].rolling(20).std()
+        df['bb_upper'] = rolling_mean + (rolling_std * 2)
+        df['bb_lower'] = rolling_mean - (rolling_std * 2)
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / rolling_mean
+        
+        # ============ 新增：核心成交量特征 ============
+        # 成交量移动平均
+        for period in [5, 10, 20, 50]:
+            df[f'volume_ma{period}'] = df['volume'].rolling(period).mean()
+            df[f'volume_ratio_{period}'] = df['volume'] / (df[f'volume_ma{period}'] + 1e-9)
+        
+        # 价量关系特征
+        df['price_change'] = df['close'].pct_change()
+        df['volume_change'] = df['volume'].pct_change()
+        
+        # 健康上涨：价涨量增
+        df['healthy_up'] = ((df['price_change'] > 0) & 
+                           (df['volume_change'] > 0.1)).astype(int)
+        
+        # 危险上涨：价涨量缩（背离）
+        df['danger_up'] = ((df['price_change'] > 0.005) & 
+                          (df['volume_change'] < -0.2)).astype(int)
+        
+        # 放量下跌：可能继续跌
+        df['heavy_down'] = ((df['price_change'] < -0.005) & 
+                           (df['volume_change'] > 0.3)).astype(int)
+        
+        # 成交量突破模式
+        df['volume_breakout'] = ((df['volume'] > df['volume_ma20'] * 1.5) & 
+                                (df['close'] > df['open'])).astype(int)
+        
+        # 成交量萎缩模式（变盘前兆）
+        df['volume_squeeze'] = ((df['volume'] < df['volume_ma20'] * 0.7) & 
+                               (df['volume_ratio_5'] < 0.8)).astype(int)
+        
+        # 成交量相对位置
+        df['volume_percentile'] = df['volume'].rolling(100).apply(
+            lambda x: (x.iloc[-1] - x.min()) / (x.max() - x.min() + 1e-9)
+        )
+        
+        # 成交量波动率
+        df['volume_volatility'] = df['volume'].pct_change().rolling(20).std()
+        # ============ 成交量特征结束 ============
+        
+        # 趋势特征
+        for period in [5, 10, 20]:
+            df[f'trend_{period}'] = (df['close'] - df['close'].shift(period)) / df['close'].shift(period)
+        
+        # 支撑阻力特征
+        df['near_support'] = ((df['close'] - df['low'].rolling(20).min()) / df['close'] < 0.005).astype(int)
+        df['near_resistance'] = ((df['high'].rolling(20).max() - df['close']) / df['close'] < 0.005).astype(int)
+        
+        # 动量特征
+        df['momentum'] = df['close'] / df['close'].shift(5) - 1
+        
+        # 波动率
+        df['volatility'] = df['close'].pct_change().rolling(20).std()
+        
+        # 删除NaN值
+        df = df.dropna()
+        
+        return df
+    
+    @staticmethod
+    def create_labels(df, future_bars=10):
+        """创建标签（10分钟后涨跌）"""
+        df = df.copy()
+        df['future_price'] = df['close'].shift(-future_bars)
+        df['future_return'] = df['future_price'] / df['close'] - 1
+        df['label'] = (df['future_return'] > 0).astype(int)
+        df = df.dropna()
+        return df
+
+class MarketStateDetector:
+    """市场状态检测器"""
+    
+    @staticmethod
+    def detect_state(df, recent_bars=20):
+        """
+        检测当前市场状态
+        返回: 'trend_up', 'trend_down', 'high_vol', 'ranging'
+        """
+        if len(df) < recent_bars:
+            return 'unknown'
+        
+        recent = df.tail(recent_bars).copy()
+        
+        # 计算趋势
+        price_change = (recent['close'].iloc[-1] - recent['close'].iloc[0]) / recent['close'].iloc[0]
+        
+        # 计算波动率
+        volatility = recent['close'].pct_change().std()
+        
+        # 判断趋势
+        if abs(price_change) > CONFIG['trend_threshold']:
+            if price_change > 0:
+                return 'trend_up'
+            else:
+                return 'trend_down'
+        
+        # 判断高波动
+        if volatility > CONFIG['volatility_threshold']:
+            return 'high_vol'
+        
+        # 默认震荡市
+        return 'ranging'
+    
+    @staticmethod
+    def get_time_adjustment(hour):
+        """根据时间调整策略"""
+        # 检查是否是关键波动时段
+        if hour in CONFIG['critical_hours']:
+            return {
+                'confidence_multiplier': 1.4,
+                'max_position': 0.3,
+                'message': f'{hour}点关键时段'
+            }
+        
+        if hour in CONFIG['problematic_hours']:
+            # 上午时段：更谨慎
+            return {
+                'confidence_multiplier': 1.3,
+                'max_position': 0.5,
+                'message': '上午时段（谨慎模式）'
+            }
+        elif hour in CONFIG['high_risk_hours']:
+            # 高风险时段：非常谨慎
+            return {
+                'confidence_multiplier': 1.5,
+                'max_position': 0.3,
+                'message': '高风险时段（保守模式）'
+            }
+        else:
+            # 正常时段
+            return {
+                'confidence_multiplier': 1.0,
+                'max_position': 1.0,
+                'message': '正常时段'
+            }
+
+class ModelManager:
+    """模型管理器"""
+    
+    def __init__(self):
+        self.models = {}
+        self.features = None
+        self.scaler = None
+        
+    def train_model(self, df, model_type='rf'):
+        """训练模型"""
+        try:
+            # 准备特征和标签 - 更新特征列表
+            feature_cols = [
+                'ret1', 'ma3_diff', 'ma5_diff', 'ma8_diff', 'ma13_diff', 
+                'ma21_diff', 'ma50_diff', 'ma99_diff', 'rsi', 'macd', 
+                'macd_signal', 'macd_hist', 'bb_width', 'volume_ratio_5',
+                'volume_ratio_10', 'volume_ratio_20', 'volume_ratio_50',
+                'healthy_up', 'danger_up', 'heavy_down', 'volume_breakout',
+                'volume_squeeze', 'volume_percentile', 'volume_volatility',
+                'trend_5', 'trend_10', 'trend_20', 'near_support',
+                'near_resistance', 'momentum', 'volatility'
+            ]
+            
+            # 只选择存在的列
+            available_cols = [col for col in feature_cols if col in df.columns]
+            
+            X = df[available_cols].values
+            y = df['label'].values
+            
+            if len(X) < 100:
+                print("数据不足，无法训练模型")
+                return False
+            
+            # 标准化
+            self.scaler = StandardScaler()
+            X_scaled = self.scaler.fit_transform(X)
+            
+            # 训练模型
+            if model_type == 'rf':
+                model = RandomForestClassifier(
+                    n_estimators=200,
+                    max_depth=15,
+                    min_samples_split=10,
+                    random_state=42,
+                    n_jobs=-1
+                )
+            elif model_type == 'lgb' and optional_deps.get('lightgbm'):
+                model = LGBMClassifier(
+                    n_estimators=200,
+                    learning_rate=0.05,
+                    num_leaves=31,
+                    random_state=42
+                )
+            elif model_type == 'xgb' and optional_deps.get('xgboost'):
+                model = XGBClassifier(
+                    n_estimators=200,
+                    learning_rate=0.05,
+                    max_depth=6,
+                    random_state=42,
+                    use_label_encoder=False,
+                    eval_metric='logloss'
+                )
+            else:
+                print(f"模型类型 {model_type} 不支持或依赖未安装")
+                return False
+            
+            model.fit(X_scaled, y)
+            self.models[model_type] = model
+            self.features = available_cols
+            
+            # 保存模型
+            import pickle
+            with open(CONFIG[f'model_{model_type}'], 'wb') as f:
+                pickle.dump({
+                    'model': model,
+                    'features': available_cols,
+                    'scaler': self.scaler
+                }, f)
+            
+            print(f"✓ {model_type.upper()} 模型训练完成，准确率: {model.score(X_scaled, y):.3f}")
+            return True
+            
+        except Exception as e:
+            print(f"训练模型失败: {e}")
+            return False
+    
+    def load_model(self, model_type='rf'):
+        """加载模型"""
+        try:
+            import pickle
+            model_file = CONFIG[f'model_{model_type}']
+            if os.path.exists(model_file):
+                with open(model_file, 'rb') as f:
+                    data = pickle.load(f)
+                    self.models[model_type] = data['model']
+                    self.features = data['features']
+                    self.scaler = data['scaler']
+                print(f"✓ 加载 {model_type.upper()} 模型")
+                return True
+        except Exception as e:
+            print(f"加载模型失败: {e}")
+        return False
+    
+    def predict(self, df, model_type='rf'):
+        """使用模型预测"""
+        if model_type not in self.models or self.features is None or self.scaler is None:
+            return None, 0.0
+        
+        try:
+            # 准备最新数据
+            latest = df.tail(1).copy()
+            
+            # 确保有所有特征
+            missing_features = [f for f in self.features if f not in latest.columns]
+            if missing_features:
+                print(f"缺少特征: {missing_features}")
+                return None, 0.0
+            
+            X_latest = latest[self.features].values
+            X_scaled = self.scaler.transform(X_latest)
+            
+            # 预测
+            model = self.models[model_type]
+            
+            if hasattr(model, 'predict_proba'):
+                proba = model.predict_proba(X_scaled)[0]
+                prediction = np.argmax(proba)
+                confidence = np.max(proba)
+            else:
+                prediction = model.predict(X_scaled)[0]
+                confidence = 0.5
+            
+            return int(prediction), float(confidence)
+            
+        except Exception as e:
+            print(f"预测失败: {e}")
+            return None, 0.0
+
+# ==================== 主GUI程序 ====================
+class BTCPredictorApp:
+    """主GUI应用程序"""
+    
+    def __init__(self, root):
+        self.root = root
+        self.setup_gui()
+        
+        # 初始化组件
+        self.data_fetcher = DataFetcher()
+        self.feature_engineer = FeatureEngineer()
+        self.state_detector = MarketStateDetector()
+        self.model_manager = ModelManager()
+        self.history_manager = PredictionHistory()
+        
+        # 状态变量
+        self.running = False
+        self.prediction_count = self.history_manager.stats['total_predictions']
+        self.correct_count = self.history_manager.stats['correct_predictions']
+        self.current_streak = self.history_manager.stats['current_streak']
+        self.current_state = "unknown"
+        
+        # 新增：声音设置
+        self.sound_enabled = True
+        
+        # 消息队列
+        self.queue = queue.Queue()
+        
+        # 加载模型
+        self.load_models()
+        
+        # 启动队列处理
+        self.root.after(100, self.process_queue)
+        
+        # 显示历史统计
+        self.show_history_stats()
+        
+        # 记录日志
+        self.log("=" * 50)
+        self.log("BTC预测系统启动成功")
+        self.log(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        self.log("=" * 50)
+    
+    def setup_gui(self):
+        """设置GUI界面"""
+        self.root.title("BTC预测系统 - 成交量增强版")
+        self.root.geometry("1000x750")
+        
+        # 设置图标（可选）
+        try:
+            self.root.iconbitmap('icon.ico')
+        except:
+            pass
+        
+        # 创建主框架
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # 标题
+        title_label = tk.Label(
+            main_frame,
+            text="BTC/USDT 10分钟预测系统",
+            font=("微软雅黑", 20, "bold"),
+            fg="#2c3e50"
+        )
+        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+        
+        # 状态显示区域
+        status_frame = ttk.LabelFrame(main_frame, text="实时状态", padding="10")
+        status_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # 价格显示
+        self.price_var = tk.StringVar(value="--")
+        price_label = tk.Label(
+            status_frame,
+            textvariable=self.price_var,
+            font=("Consolas", 28, "bold"),
+            fg="#2980b9"
+        )
+        price_label.grid(row=0, column=0, padx=20)
+        
+        # 预测显示
+        self.prediction_var = tk.StringVar(value="等待预测")
+        prediction_label = tk.Label(
+            status_frame,
+            textvariable=self.prediction_var,
+            font=("Consolas", 20),
+            fg="#27ae60"
+        )
+        prediction_label.grid(row=0, column=1, padx=20)
+        
+        # 市场状态显示
+        self.state_var = tk.StringVar(value="状态: 未知")
+        state_label = tk.Label(
+            status_frame,
+            textvariable=self.state_var,
+            font=("微软雅黑", 14),
+            fg="#8e44ad"
+        )
+        state_label.grid(row=0, column=2, padx=20)
+        
+        # 新增：成交量分析面板
+        volume_frame = ttk.LabelFrame(main_frame, text="📊 成交量分析", padding="5")
+        volume_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # 当前成交量状态
+        self.volume_status_var = tk.StringVar(value="成交量: --")
+        ttk.Label(volume_frame, textvariable=self.volume_status_var, width=20).grid(row=0, column=0)
+        
+        self.volume_ratio_var = tk.StringVar(value="比率: --")
+        ttk.Label(volume_frame, textvariable=self.volume_ratio_var, width=15).grid(row=0, column=1)
+        
+        self.price_volume_var = tk.StringVar(value="价量: --")
+        ttk.Label(volume_frame, textvariable=self.price_volume_var, width=20).grid(row=0, column=2)
+        
+        self.volume_signal_var = tk.StringVar(value="信号: --")
+        ttk.Label(volume_frame, textvariable=self.volume_signal_var, width=25).grid(row=0, column=3)
+        
+        # 统计信息
+        stats_frame = ttk.LabelFrame(main_frame, text="统计信息", padding="10")
+        stats_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # 胜率
+        ttk.Label(stats_frame, text="累计胜率:").grid(row=0, column=0, padx=5)
+        self.winrate_var = tk.StringVar(value="0.0%")
+        ttk.Label(stats_frame, textvariable=self.winrate_var, font=("Arial", 14, "bold")).grid(row=0, column=1, padx=5)
+        
+        # 交易次数
+        ttk.Label(stats_frame, text="总交易:").grid(row=0, column=2, padx=5)
+        self.total_var = tk.StringVar(value="0")
+        ttk.Label(stats_frame, textvariable=self.total_var, font=("Arial", 14)).grid(row=0, column=3, padx=5)
+        
+        # 连胜/连败
+        ttk.Label(stats_frame, text="当前连胜:").grid(row=0, column=4, padx=5)
+        self.streak_var = tk.StringVar(value="0")
+        ttk.Label(stats_frame, textvariable=self.streak_var, font=("Arial", 14)).grid(row=0, column=5, padx=5)
+        
+        # 置信度
+        ttk.Label(stats_frame, text="置信度:").grid(row=0, column=6, padx=5)
+        self.confidence_var = tk.StringVar(value="0.00")
+        ttk.Label(stats_frame, textvariable=self.confidence_var, font=("Arial", 14)).grid(row=0, column=7, padx=5)
+        
+        # 控制按钮区域
+        control_frame = ttk.Frame(main_frame)
+        control_frame.grid(row=4, column=0, columnspan=3, pady=(0, 10))
+        
+        # 开始按钮
+        self.start_button = tk.Button(
+            control_frame,
+            text="▶ 开始预测",
+            command=self.start_prediction,
+            bg="#27ae60",
+            fg="white",
+            font=("微软雅黑", 12),
+            width=15,
+            height=2
+        )
+        self.start_button.grid(row=0, column=0, padx=5)
+        
+        # 停止按钮
+        self.stop_button = tk.Button(
+            control_frame,
+            text="⏸ 停止",
+            command=self.stop_prediction,
+            bg="#e74c3c",
+            fg="white",
+            font=("微软雅黑", 12),
+            width=15,
+            height=2,
+            state=tk.DISABLED
+        )
+        self.stop_button.grid(row=0, column=1, padx=5)
+        
+        # 训练模型按钮
+        self.train_button = tk.Button(
+            control_frame,
+            text="🤖 训练模型",
+            command=self.train_model,
+            bg="#3498db",
+            fg="white",
+            font=("微软雅黑", 12),
+            width=15,
+            height=2
+        )
+        self.train_button.grid(row=0, column=2, padx=5)
+        
+        # 训练上午模型按钮
+        self.train_morning_button = tk.Button(
+            control_frame,
+            text="🌅 训练上午模型",
+            command=self.train_morning_model,
+            bg="#9b59b6",
+            fg="white",
+            font=("微软雅黑", 12),
+            width=15,
+            height=2
+        )
+        self.train_morning_button.grid(row=0, column=3, padx=5)
+        
+        # 历史记录按钮
+        self.history_button = tk.Button(
+            control_frame,
+            text="📊 查看历史",
+            command=self.show_history_window,
+            bg="#f39c12",
+            fg="white",
+            font=("微软雅黑", 12),
+            width=15,
+            height=2
+        )
+        self.history_button.grid(row=0, column=4, padx=5)
+        
+        # 设置区域
+        settings_frame = ttk.LabelFrame(main_frame, text="设置", padding="10")
+        settings_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # 模型选择
+        ttk.Label(settings_frame, text="主模型:").grid(row=0, column=0, padx=5)
+        self.model_var = tk.StringVar(value="rf")
+        model_combo = ttk.Combobox(
+            settings_frame,
+            textvariable=self.model_var,
+            values=['rf', 'lgb', 'xgb'],
+            state="readonly",
+            width=10
+        )
+        model_combo.grid(row=0, column=1, padx=5)
+        
+        # 置信度阈值
+        ttk.Label(settings_frame, text="置信度阈值:").grid(row=0, column=2, padx=5)
+        self.threshold_var = tk.DoubleVar(value=CONFIG['confidence_threshold'])
+        threshold_spin = ttk.Spinbox(
+            settings_frame,
+            from_=0.5,
+            to=0.9,
+            increment=0.01,
+            textvariable=self.threshold_var,
+            width=8
+        )
+        threshold_spin.grid(row=0, column=3, padx=5)
+        
+        # 启用市场状态检测
+        self.enable_state_var = tk.BooleanVar(value=CONFIG['enable_state_detection'])
+        state_check = ttk.Checkbutton(
+            settings_frame,
+            text="启用市场状态检测",
+            variable=self.enable_state_var
+        )
+        state_check.grid(row=0, column=4, padx=20)
+        
+        # 启用声音提示
+        self.sound_var = tk.BooleanVar(value=True)
+        sound_check = ttk.Checkbutton(
+            settings_frame,
+            text="启用声音提示",
+            variable=self.sound_var,
+            command=self.toggle_sound
+        )
+        sound_check.grid(row=0, column=5, padx=20)
+        
+        # 日志区域
+        log_frame = ttk.LabelFrame(main_frame, text="运行日志", padding="10")
+        log_frame.grid(row=6, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # 创建滚动文本框
+        self.log_text = scrolledtext.ScrolledText(
+            log_frame,
+            height=15,
+            width=120,
+            font=("Consolas", 10)
+        )
+        self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # 配置网格权重
+        main_frame.columnconfigure(0, weight=1)
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        
+        # 绑定关闭事件
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+    
+    def show_history_stats(self):
+        """显示历史统计数据"""
+        stats = self.history_manager.get_summary_stats()
+        
+        self.log("=" * 50)
+        self.log("历史统计信息:")
+        self.log(f"总预测次数: {stats['total']}")
+        self.log(f"正确次数: {stats['correct']}")
+        self.log(f"胜率: {stats['winrate']:.1f}%")
+        self.log(f"当前连胜/连败: {stats['current_streak']}")
+        self.log(f"最佳连胜: {stats['best_win_streak']}")
+        self.log(f"最差连败: {stats['worst_loss_streak']}")
+        self.log(f"累计收益率: {stats['total_profit']:.2f}%")
+        self.log(f"平均收益率: {stats['avg_profit']:.2f}%")
+        self.log("=" * 50)
+        
+        # 更新UI显示
+        if stats['total'] > 0:
+            self.prediction_count = stats['total']
+            self.correct_count = stats['correct']
+            self.current_streak = stats['current_streak']
+            self.update_stats()
+    
+    def log(self, message):
+        """记录日志"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        full_message = f"[{timestamp}] {message}"
+        print(full_message)
+        self.queue.put(('log', full_message))
+    
+    def update_status(self, price, prediction, confidence, market_state):
+        """更新状态显示"""
+        if price:
+            self.price_var.set(f"${price:,.2f}")
+        
+        if prediction is not None:
+            if prediction == 1:
+                self.prediction_var.set("预测: 上涨 📈")
+                self.prediction_var.config(fg="#27ae60")
+            else:
+                self.prediction_var.set("预测: 下跌 📉")
+                self.prediction_var.config(fg="#e74c3c")
+        else:
+            self.prediction_var.set("等待预测")
+            self.prediction_var.config(fg="#7f8c8d")
+        
+        if confidence:
+            self.confidence_var.set(f"{confidence:.3f}")
+        
+        # 更新市场状态显示
+        state_text = f"状态: {market_state}"
+        self.state_var.set(state_text)
+        
+        # 根据状态设置颜色
+        if market_state == 'trend_up':
+            self.state_var.config(fg="#27ae60")
+        elif market_state == 'trend_down':
+            self.state_var.config(fg="#e74c3c")
+        elif market_state == 'high_vol':
+            self.state_var.config(fg="#f39c12")
+        elif market_state == 'ranging':
+            self.state_var.config(fg="#3498db")
+        else:
+            self.state_var.config(fg="#7f8c8d")
+    
+    def update_volume_display(self, volume_info):
+        """更新成交量显示"""
+        if volume_info:
+            self.volume_status_var.set(volume_info['volume'])
+            self.volume_ratio_var.set(volume_info['ratio'])
+            self.price_volume_var.set(volume_info['price_volume'])
+            self.volume_signal_var.set(volume_info['signal'])
+    
+    def update_stats(self):
+        """更新统计数据"""
+        if self.prediction_count > 0:
+            winrate = (self.correct_count / self.prediction_count) * 100
+            self.winrate_var.set(f"{winrate:.1f}%")
+        else:
+            self.winrate_var.set("0.0%")
+        
+        self.total_var.set(str(self.prediction_count))
+        
+        if self.current_streak > 0:
+            self.streak_var.set(f"+{self.current_streak}")
+            self.streak_var.config(fg="#27ae60")
+        elif self.current_streak < 0:
+            self.streak_var.set(str(self.current_streak))
+            self.streak_var.config(fg="#e74c3c")
+        else:
+            self.streak_var.set("0")
+            self.streak_var.config(fg="#7f8c8d")
+    
+    def process_queue(self):
+        """处理消息队列"""
+        try:
+            while not self.queue.empty():
+                msg_type, data = self.queue.get_nowait()
+                
+                if msg_type == 'log':
+                    self.log_text.insert(tk.END, data + '\n')
+                    self.log_text.see(tk.END)
+                    
+                elif msg_type == 'update_status':
+                    price, prediction, confidence, state = data
+                    self.update_status(price, prediction, confidence, state)
+                    
+                elif msg_type == 'update_volume':
+                    self.update_volume_display(data)
+                    
+                elif msg_type == 'update_stats':
+                    self.update_stats()
+                    
+        except Exception as e:
+            print(f"处理队列错误: {e}")
+        finally:
+            self.root.after(100, self.process_queue)
+    
+    def play_start_sound(self):
+        """播放开始预测提示音"""
+        if not self.sound_enabled:
+            return
+            
+        try:
+            import winsound
+            # Windows系统 - 播放简短提示音
+            winsound.Beep(800, 200)  # 频率800Hz，持续200ms
+            time.sleep(0.1)
+            winsound.Beep(1000, 300)  # 频率1000Hz，持续300ms
+            self.log("🔊 播放开始预测提示音")
+        except ImportError:
+            # 如果是非Windows系统，尝试其他方法
+            try:
+                import os
+                if os.name == 'posix':  # macOS/Linux
+                    os.system('echo -e "\a"')  # 播放系统提示音
+                    self.log("🔊 播放系统提示音")
+            except:
+                self.log("⚠ 当前系统不支持声音提示")
+    
+    def toggle_sound(self):
+        """切换声音开关"""
+        self.sound_enabled = self.sound_var.get()
+        status = "启用" if self.sound_enabled else "禁用"
+        self.log(f"{status}声音提示")
+    
+    def analyze_volume(self):
+        """简单的成交量分析"""
+        try:
+            # 获取最新数据
+            df_raw = self.data_fetcher.get_klines(50)
+            if df_raw is None or len(df_raw) < 20:
+                return None
+            
+            latest = df_raw.iloc[-1]
+            prev = df_raw.iloc[-2]
+            
+            # 计算基础指标
+            current_volume = latest['volume']
+            avg_volume_20 = df_raw['volume'].tail(20).mean()
+            volume_ratio = current_volume / avg_volume_20 if avg_volume_20 > 0 else 0
+            
+            # 价量关系
+            price_change = (latest['close'] - prev['close']) / prev['close'] * 100
+            volume_change = (current_volume - prev['volume']) / prev['volume'] * 100
+            
+            # 生成信号
+            signals = []
+            if volume_ratio > 1.8:
+                signals.append("🔥爆量")
+            elif volume_ratio > 1.3:
+                signals.append("📈放量")
+            elif volume_ratio < 0.6:
+                signals.append("📉缩量")
+                
+            if price_change > 0.1 and volume_change > 15:
+                signals.append("健康涨")
+            elif price_change > 0.1 and volume_change < -10:
+                signals.append("背离涨")
+            elif price_change < -0.1 and volume_change > 20:
+                signals.append("恐慌跌")
+            
+            return {
+                'volume': f"量:{current_volume:.0f}",
+                'ratio': f"比:{volume_ratio:.1f}x",
+                'price_volume': f"价{price_change:+.1f}% 量{volume_change:+.0f}%",
+                'signal': " ".join(signals) if signals else "正常"
+            }
+            
+        except Exception as e:
+            return None
+    
+    def load_models(self):
+        """加载模型"""
+        self.log("正在加载模型...")
+        
+        # 尝试加载RF模型（基础模型）
+        if self.model_manager.load_model('rf'):
+            self.log("✓ RandomForest 模型加载成功")
+        else:
+            self.log("⚠ RandomForest 模型未找到，需要训练")
+        
+        # 尝试加载其他模型
+        if optional_deps.get('lightgbm'):
+            if self.model_manager.load_model('lgb'):
+                self.log("✓ LightGBM 模型加载成功")
+        
+        if optional_deps.get('xgboost'):
+            if self.model_manager.load_model('xgb'):
+                self.log("✓ XGBoost 模型加载成功")
+        
+        # 尝试加载上午模型
+        if os.path.exists(CONFIG['model_morning']):
+            try:
+                import pickle
+                with open(CONFIG['model_morning'], 'rb') as f:
+                    morning_data = pickle.load(f)
+                    self.model_manager.models['morning'] = morning_data['model']
+                self.log("✓ 上午专项模型加载成功")
+            except:
+                self.log("⚠ 上午模型加载失败")
+    
+    def train_model(self):
+        """训练模型"""
+        if self.running:
+            messagebox.showwarning("警告", "请先停止预测再训练模型")
+            return
+        
+        self.log("开始训练模型...")
+        
+        # 在新线程中训练
+        def train_thread():
+            try:
+                # 获取数据
+                df_raw = self.data_fetcher.get_klines(CONFIG['data_limit'])
+                if df_raw is None:
+                    self.log("❌ 获取数据失败")
+                    return
+                
+                # 添加特征（现在包含成交量特征）
+                df_features = self.feature_engineer.add_features(df_raw)
+                
+                # 创建标签
+                df = self.feature_engineer.create_labels(df_features, 10)
+                
+                if len(df) < 100:
+                    self.log("❌ 数据不足，无法训练")
+                    return
+                
+                # 训练模型
+                model_type = self.model_var.get()
+                success = self.model_manager.train_model(df, model_type)
+                
+                if success:
+                    self.log(f"✓ {model_type.upper()} 模型训练完成")
+                    messagebox.showinfo("成功", f"{model_type.upper()} 模型训练完成")
+                else:
+                    self.log(f"❌ {model_type.upper()} 模型训练失败")
+                    
+            except Exception as e:
+                self.log(f"训练模型错误: {e}")
+                traceback.print_exc()
+        
+        threading.Thread(target=train_thread, daemon=True).start()
+    
+    def train_morning_model(self):
+        """训练上午时段专项模型"""
+        self.log("开始训练上午专项模型...")
+        
+        def train_morning_thread():
+            try:
+                # 获取更多数据
+                df_raw = self.data_fetcher.get_klines(3000)
+                if df_raw is None:
+                    self.log("❌ 获取数据失败")
+                    return
+                
+                # 添加特征
+                df_features = self.feature_engineer.add_features(df_raw)
+                
+                # 创建标签
+                df = self.feature_engineer.create_labels(df_features, 10)
+                
+                # 提取上午时段数据（8-13点）
+                df['hour'] = df['open_time'].dt.hour
+                morning_data = df[df['hour'].isin(CONFIG['problematic_hours'])].copy()
+                
+                if len(morning_data) < 200:
+                    self.log(f"❌ 上午时段数据不足 ({len(morning_data)} 条)")
+                    return
+                
+                self.log(f"上午数据: {len(morning_data)} 条记录")
+                
+                # 训练随机森林模型
+                feature_cols = [
+                    'ret1', 'ma3_diff', 'ma5_diff', 'ma8_diff', 'ma13_diff', 
+                    'ma21_diff', 'ma50_diff', 'ma99_diff', 'rsi', 'macd', 
+                    'macd_signal', 'macd_hist', 'bb_width', 'volume_ratio_5',
+                    'volume_ratio_10', 'volume_ratio_20', 'volume_ratio_50',
+                    'healthy_up', 'danger_up', 'heavy_down', 'volume_breakout',
+                    'volume_squeeze', 'volume_percentile', 'volume_volatility',
+                    'trend_5', 'trend_10', 'trend_20', 'near_support',
+                    'near_resistance', 'momentum', 'volatility'
+                ]
+                
+                available_cols = [col for col in feature_cols if col in morning_data.columns]
+                X = morning_data[available_cols].values
+                y = morning_data['label'].values
+                
+                from sklearn.ensemble import RandomForestClassifier
+                morning_model = RandomForestClassifier(
+                    n_estimators=200,
+                    max_depth=15,
+                    min_samples_split=10,
+                    random_state=42,
+                    n_jobs=-1
+                )
+                
+                # 交叉验证
+                from sklearn.model_selection import cross_val_score
+                scores = cross_val_score(morning_model, X, y, cv=3, scoring='accuracy')
+                self.log(f"上午模型交叉验证准确率: {scores.mean():.3f} (±{scores.std():.3f})")
+                
+                # 训练最终模型
+                morning_model.fit(X, y)
+                
+                # 保存模型
+                import pickle
+                with open(CONFIG['model_morning'], 'wb') as f:
+                    pickle.dump({
+                        'model': morning_model,
+                        'features': available_cols,
+                        'scaler': None  # 上午模型不标准化
+                    }, f)
+                
+                self.model_manager.models['morning'] = morning_model
+                self.log("✓ 上午专项模型训练完成")
+                messagebox.showinfo("成功", "上午专项模型训练完成")
+                
+            except Exception as e:
+                self.log(f"训练上午模型错误: {e}")
+                traceback.print_exc()
+        
+        threading.Thread(target=train_morning_thread, daemon=True).start()
+    
+    def show_history_window(self):
+        """显示历史记录窗口"""
+        history_window = tk.Toplevel(self.root)
+        history_window.title("预测历史记录")
+        history_window.geometry("1000x600")
+        
+        # 标题
+        tk.Label(
+            history_window,
+            text="BTC预测历史记录",
+            font=("微软雅黑", 16, "bold"),
+            fg="#2c3e50"
+        ).pack(pady=10)
+        
+        # 统计信息
+        stats_frame = ttk.LabelFrame(history_window, text="汇总统计", padding="10")
+        stats_frame.pack(fill="x", padx=10, pady=5)
+        
+        stats = self.history_manager.get_summary_stats()
+        
+        # 显示统计信息
+        stats_text = f"""
+        总预测次数: {stats['total']}  |  正确次数: {stats['correct']}  |  胜率: {stats['winrate']:.1f}%
+        当前连胜/连败: {stats['current_streak']}  |  最佳连胜: {stats['best_win_streak']}  |  最差连败: {stats['worst_loss_streak']}
+        累计收益率: {stats['total_profit']:.2f}%  |  平均收益率: {stats['avg_profit']:.2f}%
+        """
+        
+        tk.Label(
+            stats_frame,
+            text=stats_text,
+            font=("Consolas", 10),
+            justify="left"
+        ).pack()
+        
+        # 创建Treeview显示历史记录
+        tree_frame = ttk.Frame(history_window)
+        tree_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # 添加滚动条
+        tree_scroll_y = ttk.Scrollbar(tree_frame)
+        tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        tree_scroll_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL)
+        tree_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # 创建Treeview
+        columns = ('时间', '开始价', '结束价', '涨跌幅', '预测', '实际', '结果', '置信度', '市场状态', '模型', '收益%')
+        tree = ttk.Treeview(
+            tree_frame,
+            columns=columns,
+            show='headings',
+            yscrollcommand=tree_scroll_y.set,
+            xscrollcommand=tree_scroll_x.set
+        )
+        
+        # 设置列宽
+        column_widths = [150, 80, 80, 70, 50, 50, 50, 60, 80, 60, 60]
+        for col, width in zip(columns, column_widths):
+            tree.heading(col, text=col)
+            tree.column(col, width=width)
+        
+        tree.pack(side=tk.LEFT, fill="both", expand=True)
+        
+        tree_scroll_y.config(command=tree.yview)
+        tree_scroll_x.config(command=tree.xview)
+        
+        # 加载历史数据
+        recent_history = self.history_manager.get_recent_predictions(100)
+        
+        for record in reversed(recent_history):
+            timestamp = record.get('timestamp', '')
+            start_price = record.get('start_price', 0)
+            end_price = record.get('end_price', 0)
+            change_pct = record.get('change_pct', 0)
+            prediction = '上涨' if record.get('prediction') == 1 else '下跌'
+            actual = '上涨' if record.get('actual') == 1 else '下跌'
+            is_correct = '正确' if record.get('is_correct') else '错误'
+            confidence = record.get('confidence', 0)
+            market_state = record.get('market_state', '')
+            model_used = record.get('model_used', '')
+            
+            # 计算收益
+            profit_pct = 0.0
+            if record.get('prediction') == 1:
+                if change_pct > 0:
+                    profit_pct = abs(change_pct)
+                else:
+                    profit_pct = -abs(change_pct)
+            else:
+                if change_pct < 0:
+                    profit_pct = abs(change_pct)
+                else:
+                    profit_pct = -abs(change_pct)
+            
+            # 添加行
+            tree.insert('', 'end', values=(
+                timestamp,
+                f"${start_price:,.2f}",
+                f"${end_price:,.2f}",
+                f"{change_pct:+.2f}%",
+                prediction,
+                actual,
+                is_correct,
+                f"{confidence:.3f}",
+                market_state,
+                model_used,
+                f"{profit_pct:+.2f}%"
+            ))
+        
+        # 控制按钮
+        button_frame = ttk.Frame(history_window)
+        button_frame.pack(pady=10)
+        
+        # 导出按钮
+        export_button = tk.Button(
+            button_frame,
+            text="📥 导出为CSV",
+            command=self.export_history_csv,
+            bg="#3498db",
+            fg="white",
+            font=("微软雅黑", 10),
+            width=15
+        )
+        export_button.grid(row=0, column=0, padx=5)
+        
+        # 清空历史按钮
+        clear_button = tk.Button(
+            button_frame,
+            text="🗑️ 清空历史",
+            command=self.clear_history,
+            bg="#e74c3c",
+            fg="white",
+            font=("微软雅黑", 10),
+            width=15
+        )
+        clear_button.grid(row=0, column=1, padx=5)
+        
+        # 刷新按钮
+        refresh_button = tk.Button(
+            button_frame,
+            text="🔄 刷新",
+            command=lambda: self.refresh_history_window(history_window),
+            bg="#2ecc71",
+            fg="white",
+            font=("微软雅黑", 10),
+            width=15
+        )
+        refresh_button.grid(row=0, column=2, padx=5)
+        
+        # 关闭按钮
+        close_button = tk.Button(
+            button_frame,
+            text="✕ 关闭",
+            command=history_window.destroy,
+            bg="#7f8c8d",
+            fg="white",
+            font=("微软雅黑", 10),
+            width=15
+        )
+        close_button.grid(row=0, column=3, padx=5)
+    
+    def refresh_history_window(self, window):
+        """刷新历史窗口"""
+        window.destroy()
+        self.show_history_window()
+    
+    def export_history_csv(self):
+        """导出历史记录为CSV"""
+        try:
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV文件", "*.csv"), ("所有文件", "*.*")],
+                initialfile=f"btc_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            )
+            
+            if not filename:
+                return
+            
+            history_data = self.history_manager.history
+            
+            if not history_data:
+                messagebox.showwarning("警告", "没有历史记录可导出")
+                return
+            
+            with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    'id', 'timestamp', 'start_price', 'end_price', 'change_pct',
+                    'prediction', 'actual', 'is_correct', 'confidence',
+                    'market_state', 'model_used', 'profit_pct'
+                ])
+                
+                writer.writeheader()
+                
+                for record in history_data:
+                    profit_pct = 0.0
+                    change_pct = record.get('change_pct', 0.0)
+                    if record.get('prediction') == 1:
+                        if change_pct > 0:
+                            profit_pct = abs(change_pct)
+                        else:
+                            profit_pct = -abs(change_pct)
+                    else:
+                        if change_pct < 0:
+                            profit_pct = abs(change_pct)
+                        else:
+                            profit_pct = -abs(change_pct)
+                    
+                    row = {
+                        'id': record.get('id', ''),
+                        'timestamp': record.get('timestamp', ''),
+                        'start_price': record.get('start_price', 0),
+                        'end_price': record.get('end_price', 0),
+                        'change_pct': change_pct,
+                        'prediction': '上涨' if record.get('prediction') == 1 else '下跌',
+                        'actual': '上涨' if record.get('actual') == 1 else '下跌',
+                        'is_correct': '是' if record.get('is_correct') else '否',
+                        'confidence': record.get('confidence', 0),
+                        'market_state': record.get('market_state', ''),
+                        'model_used': record.get('model_used', ''),
+                        'profit_pct': profit_pct
+                    }
+                    
+                    writer.writerow(row)
+            
+            self.log(f"✓ 历史记录已导出到: {filename}")
+            messagebox.showinfo("成功", f"历史记录已成功导出到:\n{filename}")
+            
+        except Exception as e:
+            self.log(f"导出历史记录失败: {e}")
+            messagebox.showerror("错误", f"导出失败: {e}")
+    
+    def clear_history(self):
+        """清空历史记录"""
+        if messagebox.askyesno("确认", "确定要清空所有历史记录吗？此操作不可恢复！"):
+            self.history_manager.clear_history()
+            self.prediction_count = 0
+            self.correct_count = 0
+            self.current_streak = 0
+            self.update_stats()
+            self.log("✓ 历史记录已清空")
+            messagebox.showinfo("成功", "历史记录已清空")
+    
+    def start_prediction(self):
+        """开始预测循环"""
+        if self.running:
+            return
+        
+        self.running = True
+        self.start_button.config(state=tk.DISABLED)
+        self.stop_button.config(state=tk.NORMAL)
+        self.train_button.config(state=tk.DISABLED)
+        self.train_morning_button.config(state=tk.DISABLED)
+        self.history_button.config(state=tk.DISABLED)
+        
+        # 播放开始预测提示音
+        self.play_start_sound()
+        
+        self.log("=" * 50)
+        self.log("开始预测循环...")
+        self.log("=" * 50)
+        
+        # 启动预测线程
+        self.prediction_thread = threading.Thread(target=self.prediction_loop, daemon=True)
+        self.prediction_thread.start()
+    
+    def stop_prediction(self):
+        """停止预测循环"""
+        if not self.running:
+            return
+        
+        self.running = False
+        self.start_button.config(state=tk.NORMAL)
+        self.stop_button.config(state=tk.DISABLED)
+        self.train_button.config(state=tk.NORMAL)
+        self.train_morning_button.config(state=tk.NORMAL)
+        self.history_button.config(state=tk.NORMAL)
+        
+        self.log("停止预测循环...")
+    
+    def prediction_loop(self):
+        """预测循环主逻辑"""
+        while self.running:
+            try:
+                # 获取当前时间
+                current_hour = datetime.now().hour
+                current_time = datetime.now().strftime("%H:%M:%S")
+                
+                # 检查是否是关键波动时段
+                if current_hour in CONFIG['critical_hours']:
+                    self.log(f"⚠️ {current_hour}点关键波动时段，请密切关注！")
+                
+                # 获取数据
+                df_raw = self.data_fetcher.get_klines(CONFIG['data_limit'])
+                if df_raw is None:
+                    self.log("获取数据失败，等待重试...")
+                    time.sleep(5)
+                    continue
+                
+                # 添加特征（包含成交量特征）
+                df_features = self.feature_engineer.add_features(df_raw)
+                
+                # 创建标签
+                df = self.feature_engineer.create_labels(df_features, 10)
+                
+                if len(df) < 100:
+                    self.log("数据不足，等待更多数据...")
+                    time.sleep(5)
+                    continue
+                
+                # 检测市场状态
+                if self.enable_state_var.get():
+                    market_state = self.state_detector.detect_state(df)
+                    self.current_state = market_state
+                else:
+                    market_state = "unknown"
+                    self.current_state = "unknown"
+                
+                # 分析成交量
+                volume_info = self.analyze_volume()
+                if volume_info:
+                    self.queue.put(('update_volume', volume_info))
+                    # 记录成交量信息
+                    self.log(f"📊 成交量: {volume_info['volume']}, {volume_info['ratio']}, {volume_info['price_volume']}")
+                    if volume_info['signal'] != "正常":
+                        self.log(f"📢 成交量信号: {volume_info['signal']}")
+                
+                # 获取时间调整参数
+                time_adjustment = self.state_detector.get_time_adjustment(current_hour)
+                
+                # 计算动态置信度阈值
+                base_threshold = self.threshold_var.get()
+                
+                # 根据市场状态调整
+                if market_state in ['trend_up', 'trend_down']:
+                    adjusted_threshold = max(base_threshold, 0.65)
+                elif market_state == 'high_vol':
+                    adjusted_threshold = max(base_threshold, 0.68)
+                else:
+                    adjusted_threshold = base_threshold
+                
+                # 根据时间调整
+                adjusted_threshold *= time_adjustment['confidence_multiplier']
+                
+                # 根据成交量信号调整
+                if volume_info and volume_info['signal'] != "正常":
+                    signal = volume_info['signal']
+                    # 正向量价信号，可以稍微降低要求
+                    if "健康涨" in signal or "爆量" in signal:
+                        adjusted_threshold *= 0.95  # 降低5%
+                        self.log(f"📈 正向量价信号，阈值降至 {adjusted_threshold:.3f}")
+                    # 负向量价信号，提高要求
+                    elif "背离涨" in signal or "缩量" in signal:
+                        adjusted_threshold *= 1.1  # 提高10%
+                        self.log(f"⚠️ 负向量价信号，阈值提至 {adjusted_threshold:.3f}")
+                
+                # 限制在合理范围内
+                adjusted_threshold = max(
+                    CONFIG['min_confidence'],
+                    min(CONFIG['max_confidence'], adjusted_threshold)
+                )
+                
+                # 模型选择
+                model_type = self.model_var.get()
+                
+                # 如果是上午时段且有上午模型，使用上午模型
+                if (current_hour in CONFIG['problematic_hours'] and 
+                    'morning' in self.model_manager.models):
+                    model_type = 'morning'
+                    self.log(f"上午时段，使用专项模型")
+                
+                # 获取预测
+                prediction, confidence = self.model_manager.predict(df, model_type)
+                
+                # 获取当前价格
+                start_price = self.data_fetcher.get_price()
+                if start_price is None:
+                    self.log("获取价格失败")
+                    time.sleep(2)
+                    continue
+                
+                # 更新状态显示
+                self.queue.put(('update_status', (
+                    start_price, prediction, confidence, market_state
+                )))
+                
+                # 记录状态
+                state_info = f"时间: {current_time}, 价格: ${start_price:,.2f}"
+                state_info += f", 状态: {market_state}, 阈值: {adjusted_threshold:.3f}"
+                
+                if prediction is not None:
+                    state_info += f", 预测: {'上涨' if prediction == 1 else '下跌'}"
+                    state_info += f", 置信度: {confidence:.3f}"
+                    
+                    # 检查置信度
+                    if confidence < adjusted_threshold:
+                        self.log(f"{state_info} → 置信度不足，跳过")
+                        time.sleep(CONFIG['refresh_interval'])
+                        continue
+                    
+                    self.log(state_info)
+                    
+                else:
+                    self.log(f"{state_info} → 预测失败")
+                    time.sleep(CONFIG['refresh_interval'])
+                    continue
+                
+                # 开始10分钟等待
+                self.log(f"开始10分钟等待，目标价: ${start_price * 1.01:,.2f} (涨) / ${start_price * 0.99:,.2f} (跌)")
+                
+                start_time = time.time()
+                wait_time = CONFIG['prediction_minutes'] * 60
+                
+                # 倒计时循环
+                while time.time() - start_time < wait_time and self.running:
+                    remaining = wait_time - (time.time() - start_time)
+                    mins = int(remaining // 60)
+                    secs = int(remaining % 60)
+                    
+                    # 每30秒更新一次价格
+                    if int(remaining) % 30 == 0:
+                        current_price = self.data_fetcher.get_price()
+                        if current_price:
+                            change = (current_price - start_price) / start_price * 100
+                            self.log(f"  倒计时 {mins:02d}:{secs:02d} | 当前: ${current_price:,.2f} ({change:+.2f}%)")
+                    
+                    time.sleep(1)
+                
+                if not self.running:
+                    break
+                
+                # 获取最终价格
+                final_price = self.data_fetcher.get_price()
+                if final_price is None:
+                    self.log("获取最终价格失败")
+                    time.sleep(CONFIG['refresh_interval'])
+                    continue
+                
+                # 计算实际结果
+                actual = 1 if final_price > start_price else 0
+                is_correct = (prediction == actual)
+                change_pct = (final_price - start_price) / start_price * 100
+                
+                # 保存预测记录到历史
+                prediction_data = {
+                    'start_price': start_price,
+                    'end_price': final_price,
+                    'change_pct': change_pct,
+                    'prediction': prediction,
+                    'actual': actual,
+                    'is_correct': is_correct,
+                    'confidence': confidence,
+                    'market_state': market_state,
+                    'model_used': model_type
+                }
+                
+                self.history_manager.add_prediction(prediction_data)
+                
+                # 更新统计
+                self.prediction_count += 1
+                if is_correct:
+                    self.correct_count += 1
+                    self.current_streak = max(self.current_streak, 0) + 1
+                else:
+                    self.current_streak = min(self.current_streak, 0) - 1
+                
+                # 更新UI
+                self.queue.put(('update_stats', None))
+                
+                # 记录结果
+                result = "✅ 正确" if is_correct else "❌ 错误"
+                direction = "上涨" if actual == 1 else "下跌"
+                
+                result_msg = f"{result} | 开始: ${start_price:,.2f} → 结束: ${final_price:,.2f}"
+                result_msg += f" ({change_pct:+.2f}%) | 实际: {direction}"
+                result_msg += f" | 预测: {'上涨' if prediction == 1 else '下跌'}"
+                result_msg += f" | 置信度: {confidence:.3f}"
+                
+                self.log(result_msg)
+                self.log(f"累计胜率: {self.correct_count}/{self.prediction_count} = {(self.correct_count/self.prediction_count*100):.1f}%")
+                
+                # 检查连续失败
+                if self.current_streak <= -CONFIG['consecutive_fail_limit']:
+                    self.log(f"⚠️ 连续失败 {abs(self.current_streak)} 次，暂停30秒")
+                    time.sleep(30)
+                
+                # 等待下一轮
+                time.sleep(CONFIG['refresh_interval'])
+                
+            except Exception as e:
+                self.log(f"预测循环错误: {e}")
+                traceback.print_exc()
+                time.sleep(5)
+    
+    def on_closing(self):
+        """关闭窗口事件"""
+        if self.running:
+            if messagebox.askyesno("确认", "预测正在进行中，确定要退出吗？"):
+                self.running = False
+                time.sleep(1)
+                self.history_manager.save_history()
+                self.history_manager.save_stats()
+                self.root.destroy()
+        else:
+            self.history_manager.save_history()
+            self.history_manager.save_stats()
+            self.root.destroy()
+
+# ==================== 主函数 ====================
+def main():
+    """主函数"""
+    try:
+        # 创建主窗口
+        root = tk.Tk()
+        
+        # 创建应用程序
+        app = BTCPredictorApp(root)
+        
+        # 窗口居中
+        root.update_idletasks()
+        width = root.winfo_width()
+        height = root.winfo_height()
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+        root.geometry(f"{width}x{height}+{x}+{y}")
+        
+        # 设置窗口最小尺寸
+        root.minsize(800, 600)
+        
+        # 启动主循环
+        print("\n" + "=" * 70)
+        print("GUI界面已启动，请查看弹出窗口")
+        print("=" * 70)
+        print("\n主要改进:")
+        print("1. 📊 新增成交量分析面板")
+        print("2. 🔧 添加了8个核心成交量特征")
+        print("3. 🔔 关键波动时段提醒 (9点、15点、21点)")
+        print("4. 🔊 开始预测声音提示")
+        print("5. 📈 价量关系智能调整置信度")
+        print("\n使用步骤:")
+        print("1. 点击'训练模型'重新训练（学习成交量特征）")
+        print("2. 点击'开始预测'启动")
+        print("3. 观察成交量信号对胜率的影响")
+        
+        root.mainloop()
+        
+    except KeyboardInterrupt:
+        print("\n\n程序被用户中断")
+    except Exception as e:
+        print(f"\n❌ 程序错误: {e}")
+        traceback.print_exc()
+        
+        try:
+            tk.Tk().withdraw()
+            messagebox.showerror("程序错误", f"程序运行时发生错误:\n{str(e)}")
+        except:
+            pass
+        
+        if sys.platform == "win32":
+            input("\n按Enter键退出...")
+
+# ==================== 启动程序 ====================
+if __name__ == "__main__":
+    main()pred_20251202_085554_0,2025-12-02 08:55:54,86325.9,86464.58,0.16064703640507377,下跌,上涨,否,0.8313232736590579,ranging,rf,-0.16064703640507377
