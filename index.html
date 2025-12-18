@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>币安事件合约模拟器</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="navbar">
+      <div class="nav-brand">
+        <h1>📈 事件合约模拟器</h1>
+        <span class="live-indicator" id="live-indicator">● 连接中...</span>
+      </div>
+      <div class="nav-balance">
+        <span class="balance-label">可用余额</span>
+        <span class="balance-value" id="balance-value">1000.00 USDT</span>
+      </div>
+      <div class="nav-actions">
+        <button class="btn-icon" id="reset-btn" title="重置账户">🔄</button>
+        <button class="btn-icon" id="export-btn" title="导出记录">📤</button>
+        <button class="btn-icon" id="import-btn" title="导入记录">📥</button>
+        <input type="file" id="import-file" accept=".xlsx,.xls" style="display:none;" />
+      </div>
+    </header>
+
+    <main class="main-content">
+      <div class="left-panel">
+        <div class="price-ticker">
+          <div class="price-main">
+            <span class="symbol-name" id="symbol-name">BTC/USDT</span>
+            <span class="price-value" id="price-value">--</span>
+          </div>
+          <div class="price-change" id="price-change">--</div>
+        </div>
+
+        <div class="chart-container">
+          <div class="chart-header">
+            <div class="timeframe-tabs" id="timeframe-tabs">
+              <button class="tf-tab active" data-tf="1m">1分钟</button>
+              <button class="tf-tab" data-tf="5m">5分钟</button>
+              <button class="tf-tab" data-tf="15m">15分钟</button>
+              <button class="tf-tab" data-tf="1h">1小时</button>
+              <button class="tf-tab" data-tf="4h">4小时</button>
+            </div>
+          </div>
+          <div id="trading-chart"></div>
+        </div>
+
+        <div class="stats-panel">
+          <h3>交易统计</h3>
+          <div class="stats-grid">
+            <div class="stat-item">
+              <span class="stat-label">总交易</span>
+              <span class="stat-value" id="total-trades">0</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">胜率</span>
+              <span class="stat-value" id="win-rate">0%</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">净盈亏</span>
+              <span class="stat-value" id="net-pnl">0.00 USDT</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">持仓中</span>
+              <span class="stat-value" id="active-count">0/5</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="right-panel">
+        <div class="trade-panel">
+          <h3>下单交易</h3>
+          
+          <div class="form-group">
+            <label>交易对</label>
+            <select class="form-control" id="symbol-select">
+              <option value="BTCUSDT">BTC/USDT</option>
+              <option value="ETHUSDT">ETH/USDT</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>到期时间</label>
+            <div class="expiry-buttons" id="expiry-buttons">
+              <button class="expiry-btn active" data-expiry="1m">1分钟</button>
+              <button class="expiry-btn" data-expiry="5m">5分钟</button>
+              <button class="expiry-btn" data-expiry="10m">10分钟</button>
+              <button class="expiry-btn" data-expiry="30m">30分钟</button>
+              <button class="expiry-btn" data-expiry="1h">1小时</button>
+              <button class="expiry-btn" data-expiry="1d">1天</button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>交易金额 (USDT)</label>
+            <input type="number" class="form-control" id="amount-input" min="5" value="10" step="5" />
+            <div class="amount-presets">
+              <button class="preset-btn" data-amount="10">10</button>
+              <button class="preset-btn" data-amount="20">20</button>
+              <button class="preset-btn" data-amount="50">50</button>
+              <button class="preset-btn" data-amount="100">100</button>
+            </div>
+          </div>
+
+          <div class="payout-info">
+            <span>收益率: <strong>85%</strong></span>
+            <span>预期收益: <strong class="payout-value" id="payout-value">8.50 USDT</strong></span>
+          </div>
+
+          <div class="direction-buttons">
+            <button class="btn-up" id="btn-up">
+              <span class="btn-icon">📈</span>
+              <span class="btn-text">看涨</span>
+            </button>
+            <button class="btn-down" id="btn-down">
+              <span class="btn-icon">📉</span>
+              <span class="btn-text">看跌</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="positions-panel">
+          <div class="panel-tabs">
+            <button class="tab-btn active" data-tab="open">进行中 <span id="open-count">0</span></button>
+            <button class="tab-btn" data-tab="closed">已结束 <span id="closed-count">0</span></button>
+          </div>
+          <div class="positions-list" id="positions-list"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
