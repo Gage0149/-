@@ -14,6 +14,7 @@ const AppState = {
     expiryCheckInterval: null,
     aiConfig: {
         provider: 'mock',
+        apiUrl: '', // 新增：自定义API地址
         apiKey: '',
         model: '',
         threshold: 60
@@ -49,16 +50,13 @@ const Elements = {
 let chart = null;
 let candleSeries = null;
 
-// 技术指标计算库
+// 技术指标计算库（保持不变）
 const TechIndicators = {
-    // 简单移动平均
     SMA: (data, period) => {
         if (data.length < period) return null;
         const sum = data.slice(-period).reduce((a, b) => a + b, 0);
         return sum / period;
     },
-
-    // 指数移动平均
     EMA: (data, period) => {
         if (data.length < period) return null;
         const k = 2 / (period + 1);
@@ -68,8 +66,6 @@ const TechIndicators = {
         }
         return ema;
     },
-
-    // MACD
     MACD: (data, fast = 12, slow = 26, signal = 9) => {
         if (data.length < slow) return null;
         const emaFast = TechIndicators.EMA(data, fast);
@@ -78,8 +74,6 @@ const TechIndicators = {
         const signalLine = TechIndicators.EMA(data.slice(-signal), signal);
         return { macd, signal: signalLine, hist: macd - signalLine };
     },
-
-    // RSI
     RSI: (data, period = 14) => {
         if (data.length < period + 1) return null;
         let gains = 0, losses = 0;
@@ -93,8 +87,6 @@ const TechIndicators = {
         const rs = avgGain / avgLoss;
         return 100 - (100 / (1 + rs));
     },
-
-    // 布林带
     BollingerBands: (data, period = 20, stdDev = 2) => {
         if (data.length < period) return null;
         const sma = TechIndicators.SMA(data, period);
@@ -109,8 +101,6 @@ const TechIndicators = {
             percentB: (data[data.length - 1] - (sma - std * stdDev)) / (2 * std * stdDev)
         };
     },
-
-    // KDJ
     KDJ: (high, low, close, period = 9) => {
         if (close.length < period) return null;
         const n = close.length - 1;
@@ -129,8 +119,6 @@ const TechIndicators = {
         const j = 3 * k - 2 * d;
         return { k, d, j };
     },
-
-    // ATR
     ATR: (high, low, close, period = 14) => {
         if (close.length < period + 1) return null;
         const tr = [];
@@ -144,7 +132,7 @@ const TechIndicators = {
     }
 };
 
-// 初始化应用
+// 初始化应用（保持不变）
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('初始化应用...');
     loadFromStorage();
@@ -163,14 +151,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     console.log('应用初始化完成');
 });
 
-// 启动定时器
+// 启动定时器（保持不变）
 function startTimers() {
     AppState.priceUpdateInterval = setInterval(updatePrice, 500);
     AppState.chartUpdateInterval = setInterval(loadChartData, 30000);
     AppState.expiryCheckInterval = setInterval(checkExpiries, 1000);
 }
 
-// 获取实时价格
+// 获取实时价格（保持不变）
 async function updatePrice() {
     try {
         const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${AppState.symbol}`);
@@ -200,7 +188,7 @@ async function updatePrice() {
     }
 }
 
-// 初始化图表
+// 初始化图表（保持不变）
 function initChart() {
     chart = LightweightCharts.createChart(Elements.chartContainer, {
         layout: { background: { color: '#1e1e1e' }, textColor: '#d1d4dc' },
@@ -222,7 +210,7 @@ function initChart() {
     });
 }
 
-// 加载图表数据
+// 加载图表数据（保持不变）
 async function loadChartData() {
     try {
         const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${AppState.symbol}&interval=${AppState.timeframe}&limit=100`);
@@ -242,7 +230,7 @@ async function loadChartData() {
     }
 }
 
-// 获取订单簿数据
+// 获取订单簿数据（保持不变）
 async function getOrderBookData() {
     try {
         const response = await fetch(`https://api.binance.com/api/v3/depth?symbol=${AppState.symbol}&limit=20`);
@@ -257,7 +245,7 @@ async function getOrderBookData() {
     }
 }
 
-// 获取资金费率
+// 获取资金费率（保持不变）
 async function getFundingRate() {
     try {
         const response = await fetch(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${AppState.symbol}&limit=1`);
@@ -269,7 +257,7 @@ async function getFundingRate() {
     }
 }
 
-// 计算所有技术指标
+// 计算所有技术指标（保持不变）
 async function calculateAllIndicators() {
     const klines = await fetch(`https://api.binance.com/api/v3/klines?symbol=${AppState.symbol}&interval=${AppState.timeframe}&limit=100`)
         .then(r => r.json())
@@ -303,30 +291,21 @@ async function calculateAllIndicators() {
     };
 }
 
-// AI分析功能
+// AI分析功能（保持不变）
 async function performAIAnalysis() {
     const expiryTime = AppState.expiry;
     const currentPrice = AppState.currentPrice;
     
-    // 显示加载状态
     Elements.aiLoading.style.display = 'block';
     Elements.aiResult.style.display = 'none';
     Elements.aiStatus.textContent = '正在收集市场数据...';
     
     try {
-        // 收集所有数据
         const indicators = await calculateAllIndicators();
-        
-        // 构建prompt
         const prompt = buildAnalysisPrompt(indicators, expiryTime, currentPrice);
-        
-        // 调用AI API
         Elements.aiStatus.textContent = 'AI正在分析中...';
         const analysis = await callAIAPI(prompt);
-        
-        // 显示结果
         displayAIResult(analysis);
-        
     } catch (error) {
         console.error('AI分析失败:', error);
         Elements.aiStatus.textContent = '分析失败，请检查API配置';
@@ -335,7 +314,7 @@ async function performAIAnalysis() {
     }
 }
 
-// 构建分析Prompt
+// 构建分析Prompt（保持不变）
 function buildAnalysisPrompt(indicators, expiryTime, currentPrice) {
     const expiryMinutes = {
         '1m': 1, '5m': 5, '10m': 10, '30m': 30, '1h': 60, '1d': 1440
@@ -373,7 +352,7 @@ function buildAnalysisPrompt(indicators, expiryTime, currentPrice) {
 分析: [详细解释]`;
 }
 
-// 调用AI API
+// 调用AI API（已修改支持自定义API地址）
 async function callAIAPI(prompt) {
     // 模拟模式
     if (AppState.aiConfig.provider === 'mock' || !AppState.aiConfig.apiKey) {
@@ -384,11 +363,16 @@ async function callAIAPI(prompt) {
         openai: { url: 'https://api.openai.com/v1/chat/completions', model: AppState.aiConfig.model || 'gpt-4-turbo-preview' },
         anthropic: { url: 'https://api.anthropic.com/v1/messages', model: AppState.aiConfig.model || 'claude-3-sonnet-20240229' },
         moonshot: { url: 'https://api.moonshot.cn/v1/chat/completions', model: AppState.aiConfig.model || 'moonshot-v1-8k' },
-        zhipu: { url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: AppState.aiConfig.model || 'glm-4' }
+        zhipu: { url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', model: AppState.aiConfig.model || 'glm-4' },
+        custom: { url: AppState.aiConfig.apiUrl, model: AppState.aiConfig.model || 'custom-model' }
     };
     
     const provider = providers[AppState.aiConfig.provider];
     if (!provider) throw new Error('不支持的AI提供商');
+    
+    // 使用自定义API地址（如果提供）
+    const apiUrl = AppState.aiConfig.provider === 'custom' ? AppState.aiConfig.apiUrl : provider.url;
+    if (!apiUrl) throw new Error('请提供API接口地址');
     
     const headers = {
         'Authorization': `Bearer ${AppState.aiConfig.apiKey}`,
@@ -412,14 +396,14 @@ async function callAIAPI(prompt) {
         max_tokens: 1024
     };
     
-    const response = await fetch(provider.url, {
+    const response = await fetch(apiUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify(body)
     });
     
     if (!response.ok) {
-        throw new Error(`API调用失败: ${response.status}`);
+        throw new Error(`API调用失败: ${response.status} ${response.statusText}`);
     }
     
     const data = await response.json();
@@ -429,7 +413,7 @@ async function callAIAPI(prompt) {
     return parseAIResponse(content);
 }
 
-// 解析AI响应
+// 解析AI响应（保持不变）
 function parseAIResponse(content) {
     const lines = content.split('\n').filter(line => line.trim());
     const result = { direction: '下跌', confidence: 50, details: '' };
@@ -450,13 +434,12 @@ function parseAIResponse(content) {
     return result;
 }
 
-// 模拟AI分析（演示用）
+// 模拟AI分析（保持不变）
 function generateMockAnalysis() {
     const random = Math.random();
     const direction = random > 0.5 ? '上涨' : '下跌';
     const confidence = 50 + Math.floor(Math.random() * 40);
     
-    // 基于当前价格生成合理的技术分析
     const currentPrice = AppState.currentPrice;
     const targetPrice = direction === '上涨' ? 
         (currentPrice * 1.002).toFixed(2) : 
@@ -473,7 +456,7 @@ function generateMockAnalysis() {
     };
 }
 
-// 显示AI分析结果
+// 显示AI分析结果（保持不变）
 function displayAIResult(analysis) {
     Elements.aiLoading.style.display = 'none';
     Elements.aiResult.style.display = 'block';
@@ -510,15 +493,13 @@ function displayAIResult(analysis) {
     
     Elements.aiStatus.textContent = '分析完成';
     
-    // 如果可信度超过阈值，显示提示
     if (analysis.confidence >= AppState.aiConfig.threshold) {
         showNotification(`🤖 AI预测: ${analysis.direction} (可信度: ${analysis.confidence}%)`, 'success');
     }
 }
 
-// 事件绑定
+// 事件绑定（保持不变）
 function bindEvents() {
-    // AI配置弹窗
     const aiConfigBtn = document.getElementById('ai-config-btn');
     const aiConfigModal = document.getElementById('ai-config-modal');
     const modalClose = document.getElementById('modal-close');
@@ -534,11 +515,8 @@ function bindEvents() {
     });
     
     saveAIConfig.addEventListener('click', saveAIConfigSettings);
-    
-    // AI分析按钮
     document.getElementById('btn-analyze').addEventListener('click', performAIAnalysis);
     
-    // 交易相关事件
     Elements.symbolSelect.addEventListener('change', async (e) => {
         AppState.symbol = e.target.value;
         Elements.symbolName.textContent = formatSymbol(e.target.value);
@@ -590,7 +568,7 @@ function bindEvents() {
     });
 }
 
-// AI配置相关函数
+// AI配置相关函数（已更新）
 function loadAIConfig() {
     const saved = localStorage.getItem('ai_config');
     if (saved) {
@@ -601,6 +579,7 @@ function loadAIConfig() {
 function loadAIConfigForm() {
     const config = AppState.aiConfig;
     document.getElementById('ai-provider').value = config.provider;
+    document.getElementById('api-url').value = config.apiUrl || '';
     document.getElementById('api-key').value = config.apiKey || '';
     document.getElementById('model-name').value = config.model || '';
     document.getElementById('confidence-threshold').value = config.threshold;
@@ -609,6 +588,7 @@ function loadAIConfigForm() {
 function saveAIConfigSettings() {
     AppState.aiConfig = {
         provider: document.getElementById('ai-provider').value,
+        apiUrl: document.getElementById('api-url').value, // 新增：保存自定义API地址
         apiKey: document.getElementById('api-key').value,
         model: document.getElementById('model-name').value,
         threshold: parseInt(document.getElementById('confidence-threshold').value)
@@ -619,7 +599,7 @@ function saveAIConfigSettings() {
     showNotification('✅ AI配置已保存', 'success');
 }
 
-// 下单、持仓管理、数据持久化等函数（与之前相同，省略重复代码）...
+// 下单、持仓管理、数据持久化等函数（保持不变，省略重复代码）
 // [保持之前的placeOrder, calculateExpiry, startCountdown, checkExpiries, settlePosition, renderPositions等函数不变]
 
 // 为节省空间，以下是关键函数的简化版本

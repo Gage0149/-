@@ -43,15 +43,20 @@
               <option value="anthropic">Anthropic (Claude)</option>
               <option value="moonshot">月之暗面 (Kimi)</option>
               <option value="zhipu">智谱AI (GLM)</option>
+              <option value="custom">自定义API</option>
               <option value="mock">模拟演示模式</option>
             </select>
+          </div>
+          <div class="form-group">
+            <label>API接口地址 <span style="color: var(--text-secondary); font-size: 12px;">(选填，用于自定义模型)</span></label>
+            <input type="text" class="form-control" id="api-url" placeholder="如: https://api.openai.com/v1/chat/completions" />
           </div>
           <div class="form-group">
             <label>API密钥</label>
             <input type="password" class="form-control" id="api-key" placeholder="输入您的API密钥" />
           </div>
           <div class="form-group">
-            <label>模型名称（可选）</label>
+            <label>模型名称 <span style="color: var(--text-secondary); font-size: 12px;">(选填)</span></label>
             <input type="text" class="form-control" id="model-name" placeholder="如: gpt-4-turbo-preview" />
           </div>
           <div class="form-group">
