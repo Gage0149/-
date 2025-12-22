@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>币安事件合约模拟器</title>
+  <title>币安事件合约模拟器 - AI分析版</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -20,12 +20,48 @@
         <span class="balance-value" id="balance-value">1000.00 USDT</span>
       </div>
       <div class="nav-actions">
+        <button class="btn-icon" id="ai-config-btn" title="AI配置">🤖</button>
         <button class="btn-icon" id="reset-btn" title="重置账户">🔄</button>
         <button class="btn-icon" id="export-btn" title="导出记录">📤</button>
         <button class="btn-icon" id="import-btn" title="导入记录">📥</button>
         <input type="file" id="import-file" accept=".xlsx,.xls" style="display:none;" />
       </div>
     </header>
+
+    <!-- AI配置弹窗 -->
+    <div class="modal-overlay" id="ai-config-modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>AI大模型配置</h3>
+          <button class="modal-close" id="modal-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>API提供商</label>
+            <select class="form-control" id="ai-provider">
+              <option value="openai">OpenAI (GPT-4)</option>
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="moonshot">月之暗面 (Kimi)</option>
+              <option value="zhipu">智谱AI (GLM)</option>
+              <option value="mock">模拟演示模式</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>API密钥</label>
+            <input type="password" class="form-control" id="api-key" placeholder="输入您的API密钥" />
+          </div>
+          <div class="form-group">
+            <label>模型名称（可选）</label>
+            <input type="text" class="form-control" id="model-name" placeholder="如: gpt-4-turbo-preview" />
+          </div>
+          <div class="form-group">
+            <label>可信度阈值 (%)</label>
+            <input type="number" class="form-control" id="confidence-threshold" value="60" min="50" max="90" />
+          </div>
+          <button class="btn-primary" id="save-ai-config">保存配置</button>
+        </div>
+      </div>
+    </div>
 
     <main class="main-content">
       <div class="left-panel">
@@ -48,6 +84,26 @@
             </div>
           </div>
           <div id="trading-chart"></div>
+        </div>
+
+        <!-- AI分析面板 -->
+        <div class="ai-panel">
+          <div class="ai-panel-header">
+            <h3>🤖 AI智能分析</h3>
+            <button class="btn-analyze" id="btn-analyze">立即分析</button>
+          </div>
+          <div class="ai-status" id="ai-status">点击按钮开始分析...</div>
+          <div class="ai-result" id="ai-result" style="display:none;">
+            <div class="ai-summary">
+              <div class="ai-prediction" id="ai-prediction"></div>
+              <div class="ai-confidence" id="ai-confidence"></div>
+            </div>
+            <div class="ai-details" id="ai-details"></div>
+          </div>
+          <div class="ai-loading" id="ai-loading" style="display:none;">
+            <div class="spinner"></div>
+            <p>AI正在分析中，请稍候...</p>
+          </div>
         </div>
 
         <div class="stats-panel">
